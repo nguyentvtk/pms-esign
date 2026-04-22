@@ -9,21 +9,22 @@ export default function Page() {
       /* ============================ PMS eSign — Frontend JS (Vercel Support) ============================ */
       const MIME = { PDF: 'application/pdf' };
       const state = { token: null, profile: null };
-      const GAS_URL = 'https://script.google.com/macros/s/AKfycbwsdDcAf5QhXW_2Zhbc9yvASh2qkamXgwlMvqKshUv0WrceFy1WljPRq-sbj0_ALlso6g/exec';
+      const API_URL = '/api/gas'; // Server-side proxy — avoids CORS
 
       const api = {
         run: (action, ...args) => {
           return new Promise((resolve, reject) => {
-            fetch(GAS_URL, {
-              method: 'POST',
-              body: JSON.stringify({ action, args })
+            fetch(API_URL, {
+              method:  'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body:    JSON.stringify({ action, args }),
             })
             .then(r => r.json())
             .then(res => {
               if (res.ok) resolve(res.data);
-              else reject(new Error(res.message));
+              else reject(new Error(res.message || 'Lỗi không xác định từ GAS'));
             })
-            .catch(reject);
+            .catch(err => reject(new Error('Không thể kết nối đến máy chủ: ' + err.message)));
           });
         }
       };
