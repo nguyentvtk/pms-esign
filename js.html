@@ -1,0 +1,298 @@
+<script>
+/* ============================ PMS eSign — Frontend JS (Bootstrap 5) ============================ */
+const MIME = { PDF: 'application/pdf' };
+const state = { token: null, profile: null };
+
+/* ---------- Helpers ---------- */
+function show(id, on) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = on ? '' : 'none';
+}
+function setHtml(id, html) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = html;
+}
+function setText(id, t) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = t;
+}
+function showLoading(msg) {
+  const ov = document.getElementById('loadingOverlay');
+  const tx = document.getElementById('loadingText');
+  if (ov) { ov.style.display = 'flex'; }
+  if (tx) tx.textContent = msg || 'Đang xử lý...';
+}
+function hideLoading() {
+  const ov = document.getElementById('loadingOverlay');
+  if (ov) ov.style.display = 'none';
+}
+function showAlert(id, type, html) {
+  // type: 'success' | 'danger' | 'warning' | 'info' | 'secondary'
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = 'alert alert-' + type + ' mt-2';
+  el.innerHTML = html;
+  el.classList.remove('d-none');
+}
+function hideAlert(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.add('d-none');
+}
+
+/* ---------- PDF signature sniffer ---------- */
+const RX = {
+  TYPE_SIG:  /\/Type\s*\/Sig\b/,
+  BYTERANGE: /\/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]/,
+  CONTENTS:  /\/Contents\s*<([0-9A-Fa-f\s]+)>/m
+};
+async function sniffPdfSignatureStrict(file) {
+  const SLICE = file.slice(0, Math.min(file.size, 6 * 1024 * 1024));
+  const buf   = await SLICE.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let s = ''; for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+
+  const isPdf    = s.startsWith('%PDF');
+  const hasSig   = RX.TYPE_SIG.test(s);
+  const brMatch  = RX.BYTERANGE.exec(s);
+  const ctMatch  = RX.CONTENTS.exec(s);
+
+  let reason = '';
+  if (!isPdf)    reason = 'Tệp không phải PDF hợp lệ.';
+  else if (!hasSig)   reason = 'PDF không có trường chữ ký (/Type /Sig).';
+  else if (!brMatch)  reason = 'Không tìm thấy ByteRange hợp lệ.';
+  else if (!ctMatch)  reason = 'Không tìm thấy Contents (dữ liệu chữ ký).';
+  else if ((ctMatch[1]||'').replace(/\s+/g,'').length < 512) reason = 'Dữ liệu chữ ký quá ngắn.';
+
+  return {
+    ok: isPdf && hasSig && !!brMatch && !!ctMatch && (ctMatch[1]||'').replace(/\s+/g,'').length >= 512,
+    reason
+  };
+}
+
+/* ---------- Bootstrap Modal helper ---------- */
+function getPinModal() {
+  const el = document.getElementById('pinModal');
+  return el ? bootstrap.Modal.getOrCreateInstance(el) : null;
+}
+
+/* ============================== UI ============================== */
+const ui = {
+
+  /* ----- Auth ----- */
+  login() {
+    const email = (document.getElementById('email')?.value || '').trim();
+    const pin   = (document.getElementById('pin')?.value   || '').trim();
+    setHtml('authMsg', '<span class="text-muted">Đang đăng nhập...</span>');
+    showLoading('Đang đăng nhập...');
+    google.script.run
+      .withSuccessHandler(res => {
+        hideLoading();
+        state.token   = res.token;
+        state.profile = res.profile;
+        setText('welcomeEmail', res.profile.email || '—');
+        setText('welcomeRole',  res.profile.role  || '—');
+        show('auth', false);
+        show('app',  true);
+        setHtml('authMsg', '');
+        ui.loadProjects();
+      })
+      .withFailureHandler(e => {
+        hideLoading();
+        setHtml('authMsg', '<span class="text-danger">' + (e?.message || String(e)) + '</span>');
+      })
+      .login(email, pin);
+  },
+
+  logout() {
+    state.token = null;
+    state.profile = null;
+    show('auth', true);
+    show('app',  false);
+    hideAlert('uploadResultAlert');
+    hideAlert('fileValidationAlert');
+  },
+
+  /* ----- Danh mục ----- */
+  loadProjects() {
+    const sel = document.getElementById('project');
+    if (sel) sel.innerHTML = '<option value="">Đang tải...</option>';
+    google.script.run
+      .withSuccessHandler(list => {
+        const pj = document.getElementById('project');
+        if (!pj) return;
+        pj.innerHTML = '<option value="">-- Chọn dự án --</option>';
+        (list || []).forEach(p => {
+          const o = document.createElement('option');
+          o.value = p.id; o.textContent = p.name || p.id;
+          pj.appendChild(o);
+        });
+        if (list && list.length) ui.loadPackages();
+      })
+      .withFailureHandler(() => {
+        const pj = document.getElementById('project');
+        if (pj) pj.innerHTML = '<option value="">Lỗi tải dữ liệu</option>';
+      })
+      .listProjects(state.token);
+  },
+
+  loadPackages() {
+    const pid = document.getElementById('project')?.value || '';
+    const sel = document.getElementById('pkg');
+    if (sel) sel.innerHTML = '<option value="">Đang tải...</option>';
+    if (!pid) { if (sel) sel.innerHTML = '<option value="">-- Chọn gói thầu --</option>'; return; }
+    google.script.run
+      .withSuccessHandler(list => {
+        const box = document.getElementById('pkg');
+        if (!box) return;
+        box.innerHTML = '<option value="">-- Chọn gói thầu --</option>';
+        (list || []).forEach(g => {
+          const o = document.createElement('option');
+          o.value = g.id; o.textContent = g.name || g.id;
+          box.appendChild(o);
+        });
+      })
+      .withFailureHandler(() => {
+        const box = document.getElementById('pkg');
+        if (box) box.innerHTML = '<option value="">Lỗi tải dữ liệu</option>';
+      })
+      .listPackages(state.token, pid);
+  },
+
+  /* ----- Validate file ----- */
+  async validateSelectedFile() {
+    const f   = document.getElementById('signedFile')?.files?.[0];
+    const btn = document.getElementById('btnSave');
+    hideAlert('fileValidationAlert');
+    hideAlert('uploadResultAlert');
+    if (btn) btn.disabled = true;
+
+    if (!f) {
+      showAlert('fileValidationAlert', 'secondary', '📁 Vui lòng chọn tệp PDF đã ký số (USB Token).');
+      return;
+    }
+    const extOk  = /\.pdf$/i.test(f.name || '');
+    const typeOk = f.type === MIME.PDF || f.type === 'application/octet-stream';
+    if (!extOk || !typeOk) {
+      showAlert('fileValidationAlert', 'warning', '⚠️ Chỉ tiếp nhận tệp <b>.pdf</b> đã ký số.');
+      return;
+    }
+    showAlert('fileValidationAlert', 'secondary', '🔍 Đang kiểm tra chữ ký số...');
+    try {
+      const r = await sniffPdfSignatureStrict(f);
+      if (!r.ok) {
+        showAlert('fileValidationAlert', 'danger',
+          '❌ PDF chưa đạt yêu cầu chữ ký số: ' + (r.reason || 'Không xác định.'));
+        return;
+      }
+      showAlert('fileValidationAlert', 'success', '✅ PDF có chữ ký số hợp lệ — sẵn sàng nộp hồ sơ.');
+      if (btn) btn.disabled = false;
+    } catch (e) {
+      showAlert('fileValidationAlert', 'warning', '⚠️ Không thể kiểm tra tệp. Vui lòng thử lại.');
+    }
+  },
+
+  /* ----- Upload ----- */
+  uploadSignedOnly() {
+    const btn = document.getElementById('btnSave');
+    const f   = document.getElementById('signedFile')?.files?.[0];
+    if (!f) { showAlert('uploadResultAlert', 'warning', '⚠️ Vui lòng chọn PDF đã ký số.'); return; }
+    if (f.type !== MIME.PDF && !/\.pdf$/i.test(f.name)) {
+      showAlert('uploadResultAlert', 'warning', '⚠️ Chỉ nhận PDF (.pdf) đã ký số.');
+      return;
+    }
+
+    const maDA = document.getElementById('project')?.value || '';
+    const maGT = document.getElementById('pkg')?.value     || '';
+
+    if (btn) {
+      btn.disabled = true;
+      btn.dataset._label = btn.innerHTML;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Đang nộp...';
+    }
+    showLoading('Đang tải lên và xử lý...');
+    hideAlert('uploadResultAlert');
+
+    const rd = new FileReader();
+    rd.onload = () => {
+      const payload = { name: f.name, dataBase64: rd.result.split(',')[1], mimeType: f.type || 'application/pdf' };
+      google.script.run
+        .withSuccessHandler(res => {
+          hideLoading();
+          if (btn) { btn.innerHTML = btn.dataset._label || '<i class="bi bi-cloud-upload"></i> Nộp hồ sơ'; btn.disabled = false; }
+
+          if (res && res.dedup) {
+            showAlert('uploadResultAlert', 'warning',
+              'ℹ️ Bỏ qua bản sao trùng trong 15 giây. (Tệp đã được xử lý.)');
+            return;
+          }
+
+          const emailOk     = res.emailStatus && res.emailStatus.indexOf('Đã gửi') === 0;
+          const statusClass = emailOk ? 'text-success' : 'text-danger';
+          const statusIcon  = emailOk ? '✅' : '⚠️';
+
+          showAlert('uploadResultAlert', 'success',
+            '<div class="fw-bold fs-6 mb-2">✅ Thành công!</div>'
+            + '<div>📄 <b>File:</b> ' + (res.name || '') + '</div>'
+            + '<div>Trạng thái: <span class="fw-bold ' + statusClass + '">'
+            + statusIcon + ' ' + (res.emailStatus || 'Đã gửi email thông báo cho người dùng')
+            + '</span></div>'
+            + '<div class="mt-2">'
+            + '<a href="' + res.url + '" target="_blank" class="link-primary fw-semibold">'
+            + '🔗 Xem file tại đây</a></div>'
+          );
+        })
+        .withFailureHandler(e => {
+          hideLoading();
+          if (btn) { btn.innerHTML = btn.dataset._label || '<i class="bi bi-cloud-upload"></i> Nộp hồ sơ'; btn.disabled = false; }
+          showAlert('uploadResultAlert', 'danger', '❌ Lỗi: ' + (e?.message || String(e)));
+        })
+        .saveSignedOnly(state.token, maDA, maGT, payload);
+    };
+    rd.onerror = () => {
+      hideLoading();
+      if (btn) { btn.innerHTML = btn.dataset._label || '<i class="bi bi-cloud-upload"></i> Nộp hồ sơ'; btn.disabled = false; }
+      showAlert('uploadResultAlert', 'danger', '❌ Không thể đọc tệp. Vui lòng thử lại.');
+    };
+    rd.readAsDataURL(f);
+  },
+
+  /* ----- Đổi PIN (Bootstrap Modal) ----- */
+  openChangePin() {
+    ['pinOld','pinNew','pinNew2'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    setText('pinMsg', '');
+    const m = getPinModal(); if (m) m.show();
+  },
+  closeChangePin() {
+    const m = getPinModal(); if (m) m.hide();
+  },
+  changePin() {
+    const oldPin  = (document.getElementById('pinOld')?.value  || '').trim();
+    const newPin  = (document.getElementById('pinNew')?.value  || '').trim();
+    const newPin2 = (document.getElementById('pinNew2')?.value || '').trim();
+    if (newPin.length < 4) { setText('pinMsg', 'PIN mới tối thiểu 4 ký tự.'); return; }
+    if (newPin !== newPin2) { setText('pinMsg', 'Nhập lại PIN chưa khớp.'); return; }
+    setText('pinMsg', 'Đang xử lý...');
+    google.script.run
+      .withSuccessHandler(() => {
+        setText('pinMsg', '');
+        ui.closeChangePin();
+        showAlert('uploadResultAlert', 'info', '🔑 Đổi PIN thành công!');
+      })
+      .withFailureHandler(e => {
+        setText('pinMsg', '❌ ' + (e?.message || e));
+      })
+      .changePin(state.token, oldPin, newPin);
+  }
+};
+
+/* ---------- Bootstrap: bind file input change ---------- */
+document.addEventListener('DOMContentLoaded', () => {
+  const fileInput = document.getElementById('signedFile');
+  if (fileInput && !fileInput._bound) {
+    fileInput.addEventListener('change', ui.validateSelectedFile);
+    fileInput._bound = true;
+  }
+});
+</script>
