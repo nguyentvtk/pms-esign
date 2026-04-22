@@ -27,6 +27,41 @@ function doGet() {
 }
 function include(name){ return HtmlService.createHtmlOutputFromFile(name).getContent(); }
 
+/**
+ * doPost(e) - API endpoint cho Vercel Proxy
+ * Nhận POST từ Vercel: payload=<json_encoded>
+ */
+function doPost(e) {
+  let res;
+  try {
+    // Đọc payload: hỗ trợ cả form-encoded (payload=...) và JSON body
+    let rawJson = '';
+    const ct = (e.postData && e.postData.type) ? e.postData.type.toLowerCase() : '';
+
+    if (ct.indexOf('application/x-www-form-urlencoded') >= 0) {
+      rawJson = decodeURIComponent((e.parameter && e.parameter.payload) || '{}');
+    } else {
+      rawJson = (e.postData && e.postData.contents) || '{}';
+    }
+
+    const params = JSON.parse(rawJson);
+    const action = params.action;
+    const args   = params.args || [];
+
+    const allowed = ['login', 'listProjects', 'listPackages', 'saveSignedOnly', 'changePin'];
+    if (allowed.indexOf(action) === -1) throw new Error('Hành động không hợp lệ: ' + action);
+
+    const result = this[action].apply(null, args);
+    res = { ok: true, data: result };
+
+  } catch (err) {
+    res = { ok: false, message: err.message };
+  }
+
+  return ContentService.createTextOutput(JSON.stringify(res))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
 /* ====================== Spreadsheet & Drive ====================== */
 function getSpreadsheet_(){
   try { return SpreadsheetApp.openById(CFG.SHEET_ID); }
