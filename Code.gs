@@ -140,11 +140,11 @@ function login(email,pin){
   if(!u) throw new Error('Email chưa được cấp quyền trong NguoiDung.');
   if(String(u.pin||'') !== String(pin||'')) throw new Error('PIN không đúng.');
   const token=Utilities.getUuid();
-  CacheService.getUserCache().put('t:'+token, JSON.stringify(u), 3600);
+  CacheService.getScriptCache().put('t:'+token, JSON.stringify(u), 3600);
   return { token, profile:{ email:u.email, role:u.role, nhaThau:u.nhaThau } };
 }
 function assertAuth(token){
-  const raw=CacheService.getUserCache().get('t:'+token);
+  const raw=CacheService.getScriptCache().get('t:'+token);
   if(!raw) throw new Error('Phiên đăng nhập hết hạn');
   return JSON.parse(raw);
 }
@@ -434,7 +434,7 @@ function changePin(token, oldPin, newPin){
   if(String(newPin||'').length<4) throw new Error('PIN mới tối thiểu 4 ký tự');
   sh.getRange(row,c_pin+1).setValue(String(newPin||''));
   u.pin=String(newPin||'');
-  CacheService.getUserCache().put('t:'+token, JSON.stringify(u), 3600);
+  CacheService.getScriptCache().put('t:'+token, JSON.stringify(u), 3600);
   return { ok:true };
 }
 
