@@ -171,7 +171,7 @@ export default function Page() {
           try {
             const r = await sniffPdfSignatureStrict(f);
             if (!r.ok) { showAlert('fileValidationAlert', 'danger', '❌ Lỗi chữ ký: ' + r.reason); return; }
-            showAlert('fileValidationAlert', 'success', '✅ PDF hợp lệ.');
+            showAlert('fileValidationAlert', 'success', '✅ PDF có chữ ký số hợp lệ — sẵn sàng nộp hồ sơ.');
             if (btn) btn.disabled = false;
           } catch (e) { showAlert('fileValidationAlert', 'warning', '⚠️ Lỗi kiểm tra.'); }
         },
