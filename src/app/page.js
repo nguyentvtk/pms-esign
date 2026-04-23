@@ -180,30 +180,48 @@ export default function Page() {
           const f   = document.getElementById('signedFile')?.files?.[0];
           const maDA = document.getElementById('project')?.value || '';
           const maGT = document.getElementById('pkg')?.value     || '';
+          if (!f) { showAlert('uploadResultAlert', 'warning', '⚠️ Vui lòng chọn tệp PDF.'); return; }
+          if (!maDA || !maGT) { showAlert('uploadResultAlert', 'warning', '⚠️ Vui lòng chọn Dự án và Gói thầu.'); return; }
           if (btn) {
             btn.disabled = true;
             btn.dataset._label = btn.innerHTML;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Đang nộp...';
           }
-          showLoading('Đang xử lý...');
+          showLoading('Đang tải lên... Vui lòng chờ (30–60 giây)');
           const rd = new FileReader();
           rd.onload = () => {
             const payload = { name: f.name, dataBase64: rd.result.split(',')[1], mimeType: f.type || 'application/pdf' };
-            api.run('saveSignedOnly', state.token, maDA, maGT, payload)
-              .then(res => {
-                hideLoading();
-                if (btn) { btn.innerHTML = btn.dataset._label; btn.disabled = false; }
-                const emailOk = res.emailStatus && res.emailStatus.indexOf('Đã gửi') === 0;
-                showAlert('uploadResultAlert', 'success', 
-                  '<b>✅ Thành công!</b><br>📄 File: ' + res.name + '<br>Trạng thái email: ' + (emailOk ? '✅ OK' : '⚠️ Lỗi')
-                  + '<br><a href="'+res.url+'" target="_blank">🔗 Xem file</a>'
-                );
-              })
-              .catch(e => {
-                hideLoading();
-                if (btn) { btn.innerHTML = btn.dataset._label; btn.disabled = false; }
-                showAlert('uploadResultAlert', 'danger', '❌ Lỗi: ' + e.message);
-              });
+            // Gọi thẳng GAS (không qua Vercel proxy) để tránh giới hạn 4.5MB và timeout 10s
+            const GAS_URL = 'https://script.google.com/macros/s/AKfycbzZir61eN-wWOqqRnKeAI8DMlBAeRaQpM3nehwjECKOO3nf8EA-oxQOatKBm4szLusC4g/exec';
+            fetch(GAS_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: 'payload=' + encodeURIComponent(JSON.stringify({ action: 'saveSignedOnly', args: [state.token, maDA, maGT, payload] })),
+              redirect: 'follow',
+            })
+            .then(r => r.text())
+            .then(text => {
+              hideLoading();
+              if (btn) { btn.innerHTML = btn.dataset._label; btn.disabled = false; }
+              let res;
+              try { res = JSON.parse(text); } catch {
+                showAlert('uploadResultAlert', 'danger', '❌ GAS trả về kết quả không hợp lệ. Vui lòng thử lại.');
+                return;
+              }
+              if (!res.ok) { showAlert('uploadResultAlert', 'danger', '❌ Lỗi: ' + (res.message || 'Không xác định')); return; }
+              const d = res.data || {};
+              const emailOk = d.emailStatus && d.emailStatus.indexOf('Đã gửi') === 0;
+              showAlert('uploadResultAlert', 'success',
+                '<b>✅ Thành công!</b><br>📄 File: ' + (d.name||'') +
+                '<br>Trạng thái email: ' + (emailOk ? '✅ OK' : '⚠️ ' + (d.emailStatus||'')) +
+                '<br><a href="' + (d.url||'#') + '" target="_blank">🔗 Xem file trên Drive</a>'
+              );
+            })
+            .catch(e => {
+              hideLoading();
+              if (btn) { btn.innerHTML = btn.dataset._label; btn.disabled = false; }
+              showAlert('uploadResultAlert', 'danger', '❌ Lỗi kết nối: ' + e.message);
+            });
           };
           rd.readAsDataURL(f);
         },

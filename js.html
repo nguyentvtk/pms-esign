@@ -128,9 +128,10 @@ const ui = {
         });
         if (list && list.length) ui.loadPackages();
       })
-      .withFailureHandler(() => {
+      .withFailureHandler(e => {
         const pj = document.getElementById('project');
-        if (pj) pj.innerHTML = '<option value="">Lỗi tải dữ liệu</option>';
+        const msg = e && e.message ? e.message : String(e);
+        if (pj) pj.innerHTML = '<option value="">⚠️ Lỗi: ' + msg + '</option>';
       })
       .listProjects(state.token);
   },
@@ -151,9 +152,10 @@ const ui = {
           box.appendChild(o);
         });
       })
-      .withFailureHandler(() => {
+      .withFailureHandler(e => {
         const box = document.getElementById('pkg');
-        if (box) box.innerHTML = '<option value="">Lỗi tải dữ liệu</option>';
+        const msg = e && e.message ? e.message : String(e);
+        if (box) box.innerHTML = '<option value="">⚠️ Lỗi: ' + msg + '</option>';
       })
       .listPackages(state.token, pid);
   },

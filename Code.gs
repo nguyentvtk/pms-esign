@@ -28,7 +28,15 @@ function doGet() {
 function include(name){ return HtmlService.createHtmlOutputFromFile(name).getContent(); }
 
 /**
- * doPost(e) - API endpoint cho Vercel Proxy
+ * doOptions(e) - Xử lý CORS preflight từ browser
+ */
+function doOptions(e) {
+  return ContentService.createTextOutput('')
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * doPost(e) - API endpoint cho Vercel Proxy VÀ browser trực tiếp
  * Nhận POST từ Vercel: payload=<json_encoded>
  */
 function doPost(e) {
