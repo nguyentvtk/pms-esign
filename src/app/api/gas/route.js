@@ -5,7 +5,7 @@
  */
 
 const GAS_EXEC_URL =
-  'https://script.google.com/macros/s/AKfycbwsdDcAf5QhXW_2Zhbc9yvASh2qkamXgwlMvqKshUv0WrceFy1WljPRq-sbj0_ALlso6g/exec';
+  'https://script.google.com/macros/s/AKfycbzZir61eN-wWOqqRnKeAI8DMlBAeRaQpM3nehwjECKOO3nf8EA-oxQOatKBm4szLusC4g/exec';
 
 export async function POST(request) {
   let text = '';
