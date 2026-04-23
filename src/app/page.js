@@ -245,6 +245,8 @@ export default function Page() {
 
       window.ui = ui;
       document.getElementById('signedFile').addEventListener('change', ui.validateSelectedFile);
+      document.getElementById('btnSave').addEventListener('click', function(){ ui.uploadSignedOnly(); });
+      document.getElementById('btnSave').disabled = true;
     `
     document.body.appendChild(script)
   }, [])
@@ -316,7 +318,7 @@ export default function Page() {
           <label className="form-label fw-bold text-primary mb-2">Chọn file PDF đã ký số</label>
           <div className="input-group mb-2">
             <input type="file" className="form-control" id="signedFile" accept=".pdf" />
-            <button className="btn btn-success fw-bold" id="btnSave" disabled onClick={() => window.ui.uploadSignedOnly()}>Nộp hồ sơ</button>
+            <button className="btn btn-success fw-bold" id="btnSave">Nộp hồ sơ</button>
           </div>
           <div id="fileValidationAlert" className="alert d-none py-2 small"></div>
           <div id="uploadResultAlert" className="alert d-none mt-2"></div>
