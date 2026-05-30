@@ -1,6 +1,6 @@
 /****************************************************
- * PMS eSign — Quản lý tài liệu ký số
- * Phiên bản: 2026-04-22 (maDA-tenGT_signed, 1 thư mục DA, email+Telegram thông báo)
+ * PMS eSign — Quản lý và Xác thực tài liệu ký số
+ * Phiên bản nâng cấp tuân thủ Nghị định 23/2025 VÀ Thông tư 15/2025
  ****************************************************/
 
 const CFG = {
@@ -18,6 +18,13 @@ const TELEGRAM = {
   THREAD_ID : 5
 };
 
+// Cấu hình cổng kết nối kiểm tra chứng thư số quốc gia (NEAC) hoặc Vercel Cryptographic Backend 
+const VERIFY_GATEWAY = {
+  API_URL     : 'https://pms-esign.vercel.app/api/verify', // Hoặc endpoint backend Vercel xử lý mật mã của bạn
+  SP_ID       : 'pms_esign_commune',                     // Cấp bởi NEAC nếu kết nối liên thông trực tiếp
+  TOKEN       : 'chuoi_bi_mat_khong_ai_biet_123'
+};
+
 /* ====================== HTML boot ====================== */
 function doGet() {
   return HtmlService.createTemplateFromFile('index')
@@ -25,27 +32,19 @@ function doGet() {
     .setTitle('PMS eSign — Upload Signed PDF')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
+
 function include(name){ return HtmlService.createHtmlOutputFromFile(name).getContent(); }
 
-/**
- * doOptions(e) - Xử lý CORS preflight từ browser
- */
 function doOptions(e) {
   return ContentService.createTextOutput('')
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-/**
- * doPost(e) - API endpoint cho Vercel Proxy VÀ browser trực tiếp
- * Nhận POST từ Vercel: payload=<json_encoded>
- */
 function doPost(e) {
   let res;
   try {
-    // Đọc payload: hỗ trợ cả form-encoded (payload=...) và JSON body
     let rawJson = '';
     const ct = (e.postData && e.postData.type) ? e.postData.type.toLowerCase() : '';
-
     if (ct.indexOf('application/x-www-form-urlencoded') >= 0) {
       rawJson = decodeURIComponent((e.parameter && e.parameter.payload) || '{}');
     } else {
@@ -55,13 +54,10 @@ function doPost(e) {
     const params = JSON.parse(rawJson);
     const action = params.action;
     const args   = params.args || [];
-
     const allowed = ['login', 'listProjects', 'listPackages', 'saveSignedOnly', 'changePin'];
     if (allowed.indexOf(action) === -1) throw new Error('Hành động không hợp lệ: ' + action);
-
     const result = this[action].apply(null, args);
     res = { ok: true, data: result };
-
   } catch (err) {
     res = { ok: false, message: err.message };
   }
@@ -75,13 +71,14 @@ function getSpreadsheet_(){
   try { return SpreadsheetApp.openById(CFG.SHEET_ID); }
   catch(e){ throw new Error('Không thể mở Spreadsheet. Chi tiết: '+e); }
 }
+
 function ensureFolder_(parent, name){
   const it = parent.getFoldersByName(name);
   return it.hasNext() ? it.next() : parent.createFolder(name);
 }
+
 function getRoot_(){ return DriveApp.getFolderById(CFG.DRIVE_FOLDER_ID); }
 
-// Chuyển tiếng Việt có dấu → không dấu, viết liền
 function removeDiacritics_(str){
   return String(str||'').normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -89,13 +86,11 @@ function removeDiacritics_(str){
     .replace(/[^a-zA-Z0-9]/g,'');
 }
 
-// Trả về thư mục dự án: root / "maDA-tenDA"  (không tạo sub-folder)
 function getOrCreateProjectFolder(maDA, tenDA){
   const folderName = String(maDA||'').trim() + '-' + removeDiacritics_(tenDA);
   return ensureFolder_(getRoot_(), folderName);
 }
 
-// Tránh trùng tên: nếu "abc_signed.pdf" đã có → dùng "abc_signed(1).pdf"
 function uniqueFileName_(folder, baseName){
   const dotIdx = baseName.lastIndexOf('.');
   const ext  = dotIdx >= 0 ? baseName.slice(dotIdx)  : '';
@@ -143,6 +138,7 @@ function getUserByEmail_(email){
   }
   return null;
 }
+
 function login(email,pin){
   const u=getUserByEmail_(email);
   if(!u) throw new Error('Email chưa được cấp quyền trong NguoiDung.');
@@ -151,6 +147,7 @@ function login(email,pin){
   CacheService.getScriptCache().put('t:'+token, JSON.stringify(u), 3600);
   return { token, profile:{ email:u.email, role:u.role, nhaThau:u.nhaThau } };
 }
+
 function assertAuth(token){
   const raw=CacheService.getScriptCache().get('t:'+token);
   if(!raw) throw new Error('Phiên đăng nhập hết hạn');
@@ -237,38 +234,90 @@ function getProjectAndPackageNames_(maDA, maGT){
     const cb=_findCol_(hdr,['maGT','magoithau','packageid','magoi','ma']);
     const cc=_findCol_(hdr,['tenGT','tengoithau','packagename','tengoi','ten']);
     for(const r of data){
-      if(String(r[ca]||'').trim()===String(maDA||'').trim() &&
-         String(r[cb]||'').trim()===String(maGT||'').trim()){
-        tenGT=String(r[cc]||'').trim(); break;
+      if(String(r[ca]||'').trim()===String(maDA||'').trim() && String(r[cb]||'').trim()===String(maGT||'').trim()){
+        tenGT=String(r[cc]||'').trim();
+        break;
       }
     }
   }
   return {tenDA, tenGT};
 }
 
-/* ====================== Kiểm tra PDF đã ký số ====================== */
+/* ====================== KIỂM TRA PHÁP LÝ CHỮ KÝ SỐ ĐỘNG (Nâng cấp) ====================== */
+/**
+ * Thực hiện kiểm tra tính hợp lệ Chữ ký số bằng giải pháp mật mã học động
+ * Kết nối Gateway đạt chuẩn TLS 1.2+ tuân thủ Thông tư 15/2025/TT-BKHCN và Nghị định 23/2025/NĐ-CP
+ */
 function verifyPdfHasSignature_(blob){
-  const mime=(blob.getContentType()||'').toLowerCase();
-  if(mime!=='application/pdf' && mime!=='application/octet-stream')
-    throw new Error('Chỉ tiếp nhận tệp PDF đã ký số.');
-  const bytes=blob.getBytes(); const size=bytes.length; const cap=Math.min(size,8*1024*1024);
-  let s=''; for(let i=0;i<cap;i++) s+=String.fromCharCode(bytes[i]);
-  if(!s.startsWith('%PDF')) throw new Error('Tệp không phải PDF hợp lệ (thiếu header %PDF).');
-  const hasTypeSig  = /\/Type\s*\/Sig\b/.test(s);
-  const hasContents = /\/Contents\s*</.test(s);
-  const hasByteRange= /\/ByteRange\s*\[([^\]]+)\]/.test(s);
-  if(!hasTypeSig)  throw new Error('PDF chưa có trường chữ ký (/Type /Sig).');
-  if(!hasContents) throw new Error('Không tìm thấy nội dung chữ ký (/Contents).');
-  if(!hasByteRange)throw new Error('Không tìm thấy ByteRange hợp lệ trong PDF.');
-  const m=/\/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]/.exec(s);
-  if(m){
-    const a=+m[1],b=+m[2],c=+m[3],d=+m[4];
-    if([a,b,c,d].some(n=>!isFinite(n)||n<0)) throw new Error('ByteRange không hợp lệ (âm/NaN).');
-    if(a+b>size||c+d>size) throw new Error('ByteRange vượt quá kích thước tệp.');
-    const diff=Math.abs(a+b+c+d-size);
-    if(diff>1024*1024) Logger.log('⚠️ ByteRange chênh '+diff+' bytes. Cho phép.');
+  const mime = (blob.getContentType()||'').toLowerCase();
+  if(mime!=='application/pdf' && mime!=='application/octet-stream') {
+    throw new Error('Chỉ tiếp nhận tệp định dạng PDF.');
   }
-  return true;
+
+  // Bước 1: Kiểm tra cấu trúc sơ bộ bằng Base64 Payload để tránh đẩy file rác lên Gateway
+  const bytes = blob.getBytes(); 
+  const size = bytes.length;
+  const cap = Math.min(size, 1024);
+  let headerStr = ''; 
+  for(let i=0; i<cap; i++) headerStr += String.fromCharCode(bytes[i]);
+  if(!headerStr.startsWith('%PDF')) throw new Error('Tệp tải lên không phải định dạng PDF hợp lệ.');
+
+  // Bước 2: Đóng gói dữ liệu Base64 gửi sang Cổng kiểm tra chữ ký số động
+  const base64Data = Utilities.base64Encode(bytes);
+  const payload = {
+    sp_id: VERIFY_GATEWAY.SP_ID,
+    token: VERIFY_GATEWAY.TOKEN,
+    file_name: blob.getName(),
+    file_base64: base64Data
+  };
+
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  try {
+    // Thực hiện gọi hàm kiểm tra chữ ký qua đường truyền bắt buộc mã hóa tối thiểu TLS 1.2
+    const response = UrlFetchApp.fetch(VERIFY_GATEWAY.API_URL, options);
+    const resCode  = response.getResponseCode();
+    const resText  = response.getContentText();
+    
+    if (resCode !== 200) {
+      throw new Error('Cổng xác thực chữ ký số phản hồi lỗi hệ thống (Mã: ' + resCode + ').');
+    }
+
+    const result = JSON.parse(resText);
+    
+    // Kết quả trả về bắt buộc phải bóc tách trạng thái của TẤT CẢ các chữ ký có trên tài liệu
+    if (!result.hasSignature) {
+      throw new Error('Tài liệu chưa được thực hiện ký số.');
+    }
+    
+    if (!result.isValid) {
+      // Trường hợp phát hiện lỗi tính toàn vẹn hoặc chứng thư số không hợp lệ
+      let detailedMsg = 'Tài liệu ký số không hợp lệ pháp lý.';
+      if (result.signatures && result.signatures.length > 0) {
+        const errorDetails = result.signatures
+          .filter(s => !s.isValid)
+          .map(s => s.signerName + ': ' + (s.error || 'Lỗi không xác định'));
+        detailedMsg += ' Phát hiện lỗi ở các chữ ký sau:\n- ' + errorDetails.join('\n- ');
+      } else if (result.message) {
+        detailedMsg += ' ' + result.message;
+      }
+      throw new Error(detailedMsg);
+    }
+    
+    const validSigs = (result.signatures || [])
+      .filter(s => s.isValid)
+      .map(s => s.signerName + ' (cấp bởi ' + (s.issuer || 'CA') + ')');
+    Logger.log('✅ Xác thực mật mã thành công. Tài liệu đáp ứng đủ điều kiện theo TT 15/2025/TT-BKHCN. Người ký hợp lệ: ' + validSigs.join(', '));
+    return true;
+
+  } catch (e) {
+    throw new Error('Lỗi quy trình kiểm tra chữ ký số: ' + e.message);
+  }
 }
 
 /* ====================== Lưu file ký số ====================== */
@@ -279,6 +328,8 @@ function saveSignedOnly(token, maDA, maGT, file, signedByCDT){
   const blob = Utilities.newBlob(
     Utilities.base64Decode(file.dataBase64), 'application/pdf', file.name||'upload.pdf'
   );
+  
+  // Thực hiện gọi hàm kiểm tra chữ ký số động nâng cấp theo chuẩn mới
   verifyPdfHasSignature_(blob);
 
   // Idempotency 15s
@@ -289,7 +340,6 @@ function saveSignedOnly(token, maDA, maGT, file, signedByCDT){
   const cache = CacheService.getScriptCache();
   if(cache.get(idemKey)) return { ok:true, dedup:true, message:'Bỏ qua bản sao trong cửa sổ 15s.' };
   cache.put(idemKey,'1',15);
-
   const {tenDA, tenGT} = getProjectAndPackageNames_(maDA, maGT);
 
   // Tên file: maDA-tenGT_signed.pdf
@@ -297,7 +347,6 @@ function saveSignedOnly(token, maDA, maGT, file, signedByCDT){
   const suffix    = signedByCDT ? '_signed_signed' : '_signed';
   const finalName = String(maDA||'').trim() + '-' + safeTenGT + suffix + '.pdf';
 
-  // Lưu vào 1 thư mục dự án (không tạo sub-folder)
   const projectFolder = getOrCreateProjectFolder(maDA, tenDA);
   const savedName     = uniqueFileName_(projectFolder, finalName);
   const gFile         = projectFolder.createFile(blob).setName(savedName).setDescription('Signed PDF');
@@ -327,16 +376,12 @@ function saveSignedOnly(token, maDA, maGT, file, signedByCDT){
         year:'numeric', hour:'2-digit', minute:'2-digit'
       });
       const htmlBody =
-        // Outer wrapper
         '<div style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;">'
         + '<table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:32px 0;">'
         + '<tr><td align="center">'
         + '<table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;'
         + 'overflow:hidden;box-shadow:0 4px 16px rgba(0,0,0,.10);max-width:600px;">'
-
-        // ── HEADER ──
-        + '<tr><td style="background:linear-gradient(135deg,#1e40af 0%,#2563eb 60%,#0ea5e9 100%);'
-        + 'padding:32px 36px 24px;">'
+        + '<tr><td style="background:linear-gradient(135deg,#1e40af 0%,#2563eb 60%,#0ea5e9 100%);padding:32px 36px 24px;">'
         + '<table width="100%" cellpadding="0" cellspacing="0"><tr>'
         + '<td style="color:#fff;">'
         + '<div style="font-size:13px;letter-spacing:2px;text-transform:uppercase;opacity:.85;margin-bottom:6px;">PMS eSign</div>'
@@ -346,66 +391,28 @@ function saveSignedOnly(token, maDA, maGT, file, signedByCDT){
         + '<td align="right" style="font-size:48px;opacity:.25;">📄</td>'
         + '</tr></table>'
         + '</td></tr>'
-
-        // ── BODY ──
         + '<tr><td style="padding:28px 36px 8px;">'
-        + '<p style="margin:0 0 16px;color:#374151;font-size:14px;line-height:1.6;">'
-        + 'Xin chào, <b>' + (u.email||'') + '</b>.<br>'
-        + 'Tài liệu ký số của bạn đã được <b style="color:#16a34a;">tải lên thành công</b> vào hệ thống.</p>'
+        + '<p style="margin:0 0 16px;color:#374151;font-size:14px;line-height:1.6;">Xin chào, <b>' + (u.email||'') + '</b>.<br>'
+        + 'Tài liệu ký số của bạn đã được <b style="color:#16a34a;">kiểm tra và tải lên thành công</b> vào hệ thống.</p>'
         + '</td></tr>'
-
-        // ── INFO TABLE ──
         + '<tr><td style="padding:0 36px 24px;">'
-        + '<table width="100%" cellpadding="0" cellspacing="0" '
-        + 'style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;font-size:14px;">'
-
-        + '<tr>'
-        + '<td style="padding:11px 16px;background:#f8fafc;font-weight:700;color:#6b7280;'
-        + 'width:130px;border-bottom:1px solid #e5e7eb;">Dự án</td>'
-        + '<td style="padding:11px 16px;color:#111827;border-bottom:1px solid #e5e7eb;">'
-        + maDA + ' — ' + (tenDA||'') + '</td></tr>'
-
-        + '<tr>'
-        + '<td style="padding:11px 16px;background:#f8fafc;font-weight:700;color:#6b7280;'
-        + 'border-bottom:1px solid #e5e7eb;">Gói thầu</td>'
-        + '<td style="padding:11px 16px;color:#111827;border-bottom:1px solid #e5e7eb;">'
-        + (tenGT||'') + '</td></tr>'
-
-        + '<tr>'
-        + '<td style="padding:11px 16px;background:#f8fafc;font-weight:700;color:#6b7280;'
-        + 'border-bottom:1px solid #e5e7eb;">Người nộp</td>'
-        + '<td style="padding:11px 16px;color:#111827;border-bottom:1px solid #e5e7eb;">'
-        + (u.email||'') + '</td></tr>'
-
-        + '<tr>'
-        + '<td style="padding:11px 16px;background:#f8fafc;font-weight:700;color:#6b7280;'
-        + 'border-bottom:1px solid #e5e7eb;">Tên file</td>'
-        + '<td style="padding:11px 16px;border-bottom:1px solid #e5e7eb;">'
-        + '<a href="' + fileUrl + '" style="color:#2563eb;font-weight:600;text-decoration:none;">'
-        + savedName + '</a></td></tr>'
-
-        + '<tr>'
-        + '<td style="padding:11px 16px;background:#f8fafc;font-weight:700;color:#6b7280;">Thời gian</td>'
+        + '<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;font-size:14px;">'
+        + '<tr><td style="padding:11px 16px;background:#f8fafc;font-weight:700;color:#6b7280;width:130px;border-bottom:1px solid #e5e7eb;">Dự án</td>'
+        + '<td style="padding:11px 16px;color:#111827;border-bottom:1px solid #e5e7eb;">' + maDA + ' — ' + (tenDA||'') + '</td></tr>'
+        + '<tr><td style="padding:11px 16px;background:#f8fafc;font-weight:700;color:#6b7280;border-bottom:1px solid #e5e7eb;">Gói thầu</td>'
+        + '<td style="padding:11px 16px;color:#111827;border-bottom:1px solid #e5e7eb;">' + (tenGT||'') + '</td></tr>'
+        + '<tr><td style="padding:11px 16px;background:#f8fafc;font-weight:700;color:#6b7280;border-bottom:1px solid #e5e7eb;">Người nộp</td>'
+        + '<td style="padding:11px 16px;color:#111827;border-bottom:1px solid #e5e7eb;">' + (u.email||'') + '</td></tr>'
+        + '<tr><td style="padding:11px 16px;background:#f8fafc;font-weight:700;color:#6b7280;border-bottom:1px solid #e5e7eb;">Tên file</td>'
+        + '<td style="padding:11px 16px;border-bottom:1px solid #e5e7eb;"><a href="' + fileUrl + '" style="color:#2563eb;font-weight:600;text-decoration:none;">' + savedName + '</a></td></tr>'
+        + '<tr><td style="padding:11px 16px;background:#f8fafc;font-weight:700;color:#6b7280;">Thời gian</td>'
         + '<td style="padding:11px 16px;color:#111827;">' + now + '</td></tr>'
-
         + '</table>'
         + '</td></tr>'
-
-        // ── CTA BUTTON ──
         + '<tr><td align="center" style="padding:4px 36px 32px;">'
-        + '<a href="' + fileUrl + '" '
-        + 'style="display:inline-block;background:linear-gradient(135deg,#1e40af,#2563eb);'
-        + 'color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;'
-        + 'padding:13px 36px;border-radius:8px;letter-spacing:.3px;">'
-        + '🔗 &nbsp;Xem file trên Google Drive</a>'
+        + '<a href="' + fileUrl + '" style="display:inline-block;background:linear-gradient(135deg,#1e40af,#2563eb);color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;padding:13px 36px;border-radius:8px;letter-spacing:.3px;">🔗 &nbsp;Xem file trên Google Drive</a>'
         + '</td></tr>'
-
-        // ── FOOTER ──
-        + '<tr><td style="background:#f8fafc;border-top:1px solid #e5e7eb;padding:16px 36px;'
-        + 'text-align:center;color:#9ca3af;font-size:12px;">'
-        + 'Email này được gửi tự động bởi <b>PMS eSign</b>. Vui lòng không trả lời email này.'
-        + '</td></tr>'
-
+        + '<tr><td style="background:#f8fafc;border-top:1px solid #e5e7eb;padding:16px 36px;text-align:center;color:#9ca3af;font-size:12px;">Email này được gửi tự động bởi <b>PMS eSign</b>. Vui lòng không trả lời email này.</td></tr>'
         + '</table></td></tr></table></div>';
 
       MailApp.sendEmail({
@@ -465,8 +472,7 @@ function sendTelegram_(msg){
   }catch(e){ Logger.log('Telegram error: '+e); }
 }
 
-/* ====================== TEST EMAIL (chạy trong GAS Editor để cấp quyền) ====================== */
-// Cách dùng: Dropdown chọn "testEmail" → nhấn ▶ Run → Allow permission → kiểm tra Gmail
+/* ====================== TEST EMAIL ====================== */
 function testEmail(){
   const to = Session.getActiveUser().getEmail();
   Logger.log('Gửi test đến: '+to);
