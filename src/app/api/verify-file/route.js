@@ -1,14 +1,13 @@
-// src/app/api/verify/route.js
+// src/app/api/verify-file/route.js
 import verifyPDF from '@qlever-llc/verify-pdf';
-
-const EXPECTED_SP_ID = "pms_esign_commune";
-const EXPECTED_TOKEN = "chuoi_bi_mat_khong_ai_biet_123";
 
 // Hàm khôi phục chuỗi Tiếng Việt bị lỗi font (mojibake) do decode sai sang Latin1
 function cleanMojibake(str) {
   if (!str) return '';
   try {
+    // Thử convert từ latin1 sang utf-8
     const cleaned = Buffer.from(str, 'latin1').toString('utf8');
+    // Nếu chuỗi chứa các ký tự unicode hợp lệ thì trả về
     return cleaned;
   } catch (e) {
     return str;
@@ -47,22 +46,16 @@ function checkTrustedCA(issuerName) {
 
 export async function POST(request) {
   try {
-    const { sp_id, token, file_base64 } = await request.json();
-
-    // 1. Kiểm tra thông tin định danh (Bảo mật tầng API)
-    if (sp_id !== EXPECTED_SP_ID || token !== EXPECTED_TOKEN) {
-      return Response.json({ message: 'Unauthorized: Sai mã định danh hoặc token bảo mật.' }, { status: 401 });
+    const formData = await request.formData();
+    const file = formData.get('file');
+    if (!file) {
+      return Response.json({ message: 'Bad Request: Thiếu dữ liệu file PDF.' }, { status: 400 });
     }
 
-    if (!file_base64) {
-      return Response.json({ message: 'Bad Request: Thiếu dữ liệu file b64.' }, { status: 400 });
-    }
-
-    // 2. Chuyển đổi dữ liệu chuỗi Base64 thành Buffer
-    const pdfBuffer = Buffer.from(file_base64, 'base64');
+    const pdfBuffer = Buffer.from(await file.arrayBuffer());
     const pdfString = pdfBuffer.toString('binary');
 
-    // 3. Quét tìm tất cả các cấu trúc chữ ký số và ByteRange bằng regex để kiểm tra tính toàn vẹn file
+    // 1. Quét tìm tất cả các cấu trúc chữ ký số và ByteRange bằng regex để kiểm tra tính toàn vẹn file
     const sigRegex = /\/Type\s*\/Sig/g;
     const sigMatches = [...pdfString.matchAll(sigRegex)];
 
@@ -77,7 +70,7 @@ export async function POST(request) {
       });
     }
 
-    // 4. Sử dụng thư viện @qlever-llc/verify-pdf để xác thực mật mã học
+    // 2. Sử dụng thư viện @qlever-llc/verify-pdf để xác thực mật mã học
     let result;
     try {
       result = verifyPDF(pdfBuffer);
@@ -135,7 +128,7 @@ export async function POST(request) {
       });
     });
 
-    // 5. Kiểm tra chèn đè tệp nhị phân sau chữ ký cuối cùng (expected size = c + d)
+    // 3. Kiểm tra chèn đè tệp nhị phân sau chữ ký cuối cùng (expected size = c + d)
     const lastMatch = byteRangeMatches[byteRangeMatches.length - 1];
     const lastC = parseInt(lastMatch[3]);
     const lastD = parseInt(lastMatch[4]);

@@ -165,15 +165,43 @@ export default function Page() {
           hideAlert('uploadResultAlert');
           if (btn) btn.disabled = true;
           if (!f) return;
-          const extOk  = /\\.pdf$/i.test(f.name || '');
+          const extOk  = /\.pdf$/i.test(f.name || '');
           if (!extOk) { showAlert('fileValidationAlert', 'warning', '⚠️ Chỉ tiếp nhận tệp .pdf'); return; }
-          showAlert('fileValidationAlert', 'secondary', '🔍 Đang kiểm tra chữ ký số...');
+          showAlert('fileValidationAlert', 'secondary', '<span class="spinner-border spinner-border-sm me-1"></span> 🔍 Đang xác thực chữ ký số bằng mật mã học...');
           try {
-            const r = await sniffPdfSignatureStrict(f);
-            if (!r.ok) { showAlert('fileValidationAlert', 'danger', '❌ Lỗi chữ ký: ' + r.reason); return; }
-            showAlert('fileValidationAlert', 'success', '✅ PDF có chữ ký số hợp lệ — sẵn sàng nộp hồ sơ.');
+            const formData = new FormData();
+            formData.append('file', f);
+            const response = await fetch('/api/verify-file', {
+              method: 'POST',
+              body: formData
+            });
+            if (!response.ok) {
+              const errData = await response.json();
+              throw new Error(errData.message || 'Lỗi hệ thống xác thực.');
+            }
+            const res = await response.json();
+            if (!res.hasSignature) {
+              showAlert('fileValidationAlert', 'danger', '❌ PDF chưa đạt yêu cầu: ' + (res.message || 'Tài liệu chưa được thực hiện ký số.'));
+              return;
+            }
+            if (!res.isValid) {
+              showAlert('fileValidationAlert', 'danger', 
+                '<div class="fw-bold mb-1">❌ PDF có chữ ký số KHÔNG hợp lệ:</div>' +
+                '<div style="white-space: pre-line;">' + (res.message || 'Lỗi xác thực.') + '</div>'
+              );
+              return;
+            }
+            const validSigs = (res.signatures || [])
+              .filter(s => s.isValid)
+              .map(s => '<b>' + s.signerName + '</b> (CA: ' + s.issuer + ')');
+            showAlert('fileValidationAlert', 'success', 
+              '✅ PDF có chữ ký số hợp lệ — sẵn sàng nộp hồ sơ.<br>' +
+              '<div class="small mt-1 text-muted">Người ký: ' + validSigs.join(', ') + '</div>'
+            );
             if (btn) btn.disabled = false;
-          } catch (e) { showAlert('fileValidationAlert', 'warning', '⚠️ Lỗi kiểm tra.'); }
+          } catch (e) { 
+            showAlert('fileValidationAlert', 'warning', '⚠️ Lỗi kiểm tra chữ ký: ' + e.message); 
+          }
         },
         uploadSignedOnly() {
           const btn = document.getElementById('btnSave');
